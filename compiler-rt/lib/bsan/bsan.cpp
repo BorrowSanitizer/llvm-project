@@ -4,6 +4,8 @@
 #include "sanitizer_common/sanitizer_common.h"
 #include "sanitizer_common/sanitizer_stacktrace.h"
 #include <stdlib.h>
+#include <sys/mman.h>
+
 using namespace __sanitizer;
 using namespace __bsan;
 using namespace bsan_rt;
@@ -16,8 +18,9 @@ bool bsan_deinit_is_running = false;
 const BsanAllocator gBsanAlloc = BsanAllocator {
   .malloc = REAL(malloc),
   .free = REAL(free),
-  .mmap = REAL(mmap),
-  .munmap = REAL(munmap)
+  // not really having interceptors for mmap and munmap
+  .mmap = mmap,
+  .munmap = munmap
 }; 
 } // namespace __bsan
 
