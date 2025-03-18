@@ -1,5 +1,7 @@
 include_directories(..)
 
+include_directories(${BSAN_RT_HEADER_DIR})
+
 set(BSAN_SOURCES
   bsan_interceptors.cpp
   bsan.cpp
