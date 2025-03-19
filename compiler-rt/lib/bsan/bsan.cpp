@@ -14,14 +14,7 @@ namespace __bsan {
 bool bsan_initialized = false;
 bool bsan_init_is_running = false;
 bool bsan_deinit_is_running = false;
-
-const BsanAllocator gBsanAlloc = BsanAllocator {
-  .malloc = REAL(malloc),
-  .free = REAL(free),
-  // not really having interceptors for mmap and munmap
-  .mmap = mmap,
-  .munmap = munmap
-}; 
+BsanAllocator gBsanAlloc;
 } // namespace __bsan
 
 
@@ -33,6 +26,10 @@ extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __bsan_init() {
     return;
   bsan_init_is_running = true;
   InitializeInterceptors();
+  gBsanAlloc.malloc = REAL(malloc);
+  gBsanAlloc.free = REAL(free);
+  gBsanAlloc.mmap = mmap;
+  gBsanAlloc.munmap = munmap;
   bsan_init(gBsanAlloc);
   bsan_initialized = true;
   bsan_init_is_running = false;

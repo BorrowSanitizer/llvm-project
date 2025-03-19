@@ -11,7 +11,7 @@
 using __sanitizer::uptr;
 
 namespace __bsan {
-    extern const bsan_rt::BsanAllocator gBsanAlloc;
+    extern bsan_rt::BsanAllocator gBsanAlloc;
     extern bool bsan_initialized;
     extern bool bsan_init_is_running;
     void InitializeInterceptors();
