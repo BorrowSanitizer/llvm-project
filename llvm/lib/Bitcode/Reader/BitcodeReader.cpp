@@ -2133,6 +2133,8 @@ static Attribute::AttrKind getAttrFromCode(uint64_t Code) {
     return Attribute::StructRet;
   case bitc::ATTR_KIND_SANITIZE_ADDRESS:
     return Attribute::SanitizeAddress;
+  case bitc::ATTR_KIND_SANITIZE_BORROW:
+    return Attribute::SanitizeBorrow;
   case bitc::ATTR_KIND_SANITIZE_HWADDRESS:
     return Attribute::SanitizeHWAddress;
   case bitc::ATTR_KIND_SANITIZE_THREAD:

@@ -694,6 +694,8 @@ uint64_t DXILBitcodeWriter::getAttrKindEncoding(Attribute::AttrKind Kind) {
     return bitc::ATTR_KIND_STRUCT_RET;
   case Attribute::SanitizeAddress:
     return bitc::ATTR_KIND_SANITIZE_ADDRESS;
+  case Attribute::SanitizeBorrow:
+    return bitc::ATTR_KIND_SANITIZE_BORROW;
   case Attribute::SanitizeThread:
     return bitc::ATTR_KIND_SANITIZE_THREAD;
   case Attribute::SanitizeMemory:

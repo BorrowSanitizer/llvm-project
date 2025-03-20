@@ -78,6 +78,7 @@ constexpr bool isValidForDXIL(Attribute::AttrKind Attr) {
                        Attribute::SafeStack,
                        Attribute::StructRet,
                        Attribute::SanitizeAddress,
+                       Attribute::SanitizeBorrow,
                        Attribute::SanitizeThread,
                        Attribute::SanitizeMemory,
                        Attribute::UWTable,

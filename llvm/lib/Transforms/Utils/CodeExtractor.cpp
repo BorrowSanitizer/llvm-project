@@ -954,6 +954,7 @@ Function *CodeExtractor::constructFunction(const ValueSet &inputs,
       case Attribute::SafeStack:
       case Attribute::ShadowCallStack:
       case Attribute::SanitizeAddress:
+      case Attribute::SanitizeBorrow:
       case Attribute::SanitizeMemory:
       case Attribute::SanitizeNumericalStability:
       case Attribute::SanitizeThread:

@@ -383,6 +383,7 @@ class CompatRuleStrAttr<string F, string Attr> : CompatRule<F> {
 }
 
 def : CompatRule<"isEqual<SanitizeAddressAttr>">;
+def : CompatRule<"isEqual<SanitizeBorrowAttr>">;
 def : CompatRule<"isEqual<SanitizeThreadAttr>">;
 def : CompatRule<"isEqual<SanitizeMemoryAttr>">;
 def : CompatRule<"isEqual<SanitizeHWAddressAttr>">;

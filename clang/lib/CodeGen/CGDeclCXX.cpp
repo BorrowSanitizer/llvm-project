@@ -467,6 +467,10 @@ llvm::Function *CodeGenModule::CreateGlobalInitOrCleanUpFunction(
       !isInNoSanitizeList(SanitizerKind::KernelAddress, Fn, Loc))
     Fn->addFnAttr(llvm::Attribute::SanitizeAddress);
 
+  if (getLangOpts().Sanitize.has(SanitizerKind::Borrow) &&
+    !isInNoSanitizeList(SanitizerKind::Borrow, Fn, Loc))
+    Fn->addFnAttr(llvm::Attribute::SanitizeBorrow);
+
   if (getLangOpts().Sanitize.has(SanitizerKind::HWAddress) &&
       !isInNoSanitizeList(SanitizerKind::HWAddress, Fn, Loc))
     Fn->addFnAttr(llvm::Attribute::SanitizeHWAddress);
