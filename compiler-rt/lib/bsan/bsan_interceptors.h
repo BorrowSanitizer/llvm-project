@@ -39,10 +39,9 @@ void InitializeBsanInterceptors();
 #define BSAN_MEMCPY_IMPL(ctx, to, from, size)                                  \
   do {                                                                         \
     if (LIKELY(BsanInited())) {                                                \
-      BSAN_READ_RANGE(ctx, from, size);                                        \
-      BSAN_WRITE_RANGE(ctx, to, size);                                         \
-    } else {                                                                   \
-      return internal_memcpy(to, from, size);                                  \
+      uptr __to = (uptr)to;                                                    \
+      uptr __from = (uptr)from;                                                \
+      BsanShadowCopy(__to, __from, size);                                            \
     }                                                                          \
     return REAL(memcpy)(to, from, size);                                       \
   } while (0)
@@ -58,22 +57,23 @@ void InitializeBsanInterceptors();
 #define BSAN_MEMMOVE_IMPL(ctx, to, from, size)                                 \
   do {                                                                         \
     if (LIKELY(BsanInited())) {                                                \
-      BSAN_READ_RANGE(ctx, from, size);                                        \
-      BSAN_WRITE_RANGE(ctx, to, size);                                         \
+      uptr __to = (uptr)to;                                                    \
+      uptr __from = (uptr)from;                                                \
+      BsanShadowCopy(__to, __from, size);                                      \
     }                                                                          \
     return internal_memmove(to, from, size);                                   \
   } while (0)
 #define BSAN_WRITE_RANGE(ctx, ptr, size)                                       \
   do {                                                                         \
-    uptr __offset = (uptr)ptr;                                                 \
+    uptr __ptr = (uptr)ptr;                                                    \
     uptr __size = (uptr)size;                                                  \
-    BsanWrite(0, __offset, __size);                                               \
+    BsanShadowClear(__ptr, __size);                                            \
   } while (false)
 #define BSAN_READ_RANGE(ctx, ptr, size)                                        \
   do {                                                                         \
     uptr __offset = (uptr)ptr;                                                 \
     uptr __size = (uptr)size;                                                  \
-    BsanRead(0, __offset, __size);                                                \
+    BsanRead(0, __offset, __size);                                             \
   } while (false)
 
 DECLARE_REAL(void *, memcpy, void *to, const void *from, uptr size)
@@ -81,7 +81,7 @@ DECLARE_REAL(void *, memset, void *block, int c, uptr size)
 
 DECLARE_REAL_AND_INTERCEPTOR(void *, malloc, uptr)
 DECLARE_REAL_AND_INTERCEPTOR(void, free, void *)
-DECLARE_REAL_AND_INTERCEPTOR(void *, mmap, void *, SIZE_T, int, int, int, OFF64_T)
+DECLARE_REAL_AND_INTERCEPTOR(void *, mmap, void *, SIZE_T, int, int, int, OFF_T)
 DECLARE_REAL_AND_INTERCEPTOR(int, munmap, void *, SIZE_T)
 
 #define BSAN_INTERCEPTOR_ENTER(ctx, func)                                      \

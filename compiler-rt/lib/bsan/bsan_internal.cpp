@@ -13,7 +13,6 @@ namespace __bsan {
 extern "C" void BsanPrintln(char const *ptr) { Printf("%s\n", ptr); }
 extern "C" void BsanExit() { Die(); }
 
-
 const BsanAllocHooks gBsanAllocHooks =
     BsanAllocHooks{.malloc = REAL(malloc), .free = REAL(free)};
 
@@ -93,8 +92,12 @@ bool TryBsanDeinitFromRtl() {
   return result;
 }
 
-void BsanCopy(uptr src_ptr, uptr dst_ptr, uptr access_size) {
-  bsan_rt::bsan_copy(src_ptr, dst_ptr, access_size);
+void BsanShadowCopy(uptr dst_ptr, uptr src_ptr, uptr access_size) {
+  bsan_rt::bsan_shadow_copy(dst_ptr, src_ptr, access_size);
+}
+
+void BsanShadowClear(uptr addr, uptr access_size) {
+  bsan_rt::bsan_shadow_clear(addr, access_size);
 }
 
 void BsanPushFrame() { bsan_rt::bsan_push_frame(GET_CURRENT_PC()); }

@@ -8,8 +8,13 @@ using namespace __sanitizer;
 using namespace __bsan;
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
-__bsan_copy(uptr src_ptr, uptr dst_ptr, uptr access_size) {
-  BsanCopy(src_ptr, dst_ptr, access_size);
+__bsan_shadow_copy(uptr dst_ptr, uptr src_ptr, uptr access_size) {
+  BsanShadowCopy(dst_ptr, src_ptr, access_size);
+}
+
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
+__bsan_shadow_clear(uptr ptr, uptr access_size) {
+  BsanShadowClear(ptr, access_size);
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __bsan_preinit() {
