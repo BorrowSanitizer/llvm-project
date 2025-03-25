@@ -35,7 +35,8 @@ const char kBsanFuncDeinitName[] = "__bsan_deinit";
 
 const char kBsanFuncPushFrameName[] = "__bsan_push_frame";
 const char kBsanFuncPopFrameName[] = "__bsan_pop_frame";
-const char kBsanFuncCopyName[] = "__bsan_copy";
+const char kBsanFuncCopyShadowName[] = "__bsan_copy_shadow";
+const char kBsanFuncClearShadowName[] = "__bsan_clear_shadow";
 const char kBsanFuncRetagName[] = "__bsan_retag";
 const char kBsanFuncStoreProvName[] = "__bsan_store_prov";
 const char kBsanFuncLoadProvName[] = "__bsan_load_prov";
@@ -48,10 +49,6 @@ const char kBsanFuncWriteName[] = "__bsan_write";
 
 // Provenance is three words
 static const unsigned kProvenanceSize = 24;
-// 100 Provenance entries for parameters
-static const unsigned kParamTLSSize = 100 * kProvenanceSize;
-// 1 Provenance entry for return value
-static const unsigned kRetvalTLSSize = kParamTLSSize;
 
 // Command-line flags:
 static cl::opt<bool>
@@ -118,10 +115,6 @@ private:
   PointerType *PtrTy;
   Type *IntptrTy;
   StructType *ProvenanceTy;
-
-  Value *ParamTLS;
-  Value *RetvalTLS;
-
   bool CallbacksInitialized = false;
 
   Function *BsanCtorFunction = nullptr;
@@ -129,7 +122,8 @@ private:
   FunctionCallee BsanFuncRetag;
   FunctionCallee BsanFuncPushFrame;
   FunctionCallee BsanFuncPopFrame;
-  FunctionCallee BsanFuncCopy;
+  FunctionCallee BsanFuncCopyShadow;
+  FunctionCallee BsanFuncClearShadow;
   FunctionCallee BsanFuncStoreProv;
   FunctionCallee BsanFuncLoadProv;
   FunctionCallee BsanFuncAlloc;
@@ -351,37 +345,84 @@ void BorrowSanitizer::initializeCallbacks(Module &M,
     return;
 
   IRBuilder<> IRB(*C);
-  BsanFuncRetag = M.getOrInsertFunction(kBsanFuncRetagName, IRB.getVoidTy(),
-                                        PtrTy, Int8Ty, Int8Ty);
 
-  FunctionType *PushFrameTy = FunctionType::get(PtrTy, /*isVarArg=*/false);
-  BsanFuncPushFrame =
-      M.getOrInsertFunction(kBsanFuncPushFrameName, PushFrameTy);
+  BsanFuncRetag = M.getOrInsertFunction(
+    kBsanFuncRetagName, 
+    IRB.getVoidTy(),
+    PtrTy, Int8Ty, Int8Ty
+  );
 
-  FunctionType *PopFrameTy =
-      FunctionType::get(IRB.getVoidTy(), /*isVarArg=*/false);
-  BsanFuncPopFrame = M.getOrInsertFunction(kBsanFuncPopFrameName, PopFrameTy);
+  BsanFuncPushFrame = M.getOrInsertFunction(
+    kBsanFuncPushFrameName,
+    FunctionType::get(PtrTy, /*isVarArg=*/false)
+  );
 
-  BsanFuncCopy = M.getOrInsertFunction(kBsanFuncCopyName, IRB.getVoidTy(),
-                                      IntptrTy, IntptrTy, IntptrTy);
-  BsanFuncStoreProv = M.getOrInsertFunction(kBsanFuncStoreProvName,
-                                            IRB.getVoidTy(), PtrTy, IntptrTy);
-  BsanFuncLoadProv = M.getOrInsertFunction(kBsanFuncLoadProvName,
-                                           IRB.getVoidTy(), PtrTy, IntptrTy);
+  BsanFuncPopFrame = M.getOrInsertFunction(
+      kBsanFuncPopFrameName, 
+      FunctionType::get(IRB.getVoidTy(), /*isVarArg=*/false)
+  );
 
-  BsanFuncAlloc = M.getOrInsertFunction(kBsanFuncAllocName, IRB.getVoidTy(),
-                                        PtrTy, IntptrTy);
-  BsanFuncAllocStack = M.getOrInsertFunction(kBsanFuncAllocStackName,
-                                             IRB.getVoidTy(), PtrTy, IntptrTy);
+  BsanFuncCopyShadow = M.getOrInsertFunction(
+      kBsanFuncCopyShadowName, 
+      IRB.getVoidTy(),
+      IntptrTy, IntptrTy, IntptrTy
+  );
 
-  BsanFuncDealloc =
-      M.getOrInsertFunction(kBsanFuncDeallocName, IRB.getVoidTy(), PtrTy);
-  BsanFuncExposeTag =
-      M.getOrInsertFunction(kBsanFuncExposeTagName, IRB.getVoidTy(), PtrTy);
-  BsanFuncRead = M.getOrInsertFunction(kBsanFuncReadName, IRB.getVoidTy(),
-                                       PtrTy, IntptrTy, IntptrTy);
-  BsanFuncWrite = M.getOrInsertFunction(kBsanFuncWriteName, IRB.getVoidTy(),
-                                        PtrTy, IntptrTy, IntptrTy);
+  BsanFuncClearShadow = M.getOrInsertFunction(
+    kBsanFuncClearShadowName, 
+    IRB.getVoidTy(),
+    IntptrTy, IntptrTy
+  );
+
+  BsanFuncStoreProv = M.getOrInsertFunction(
+    kBsanFuncStoreProvName,
+    IRB.getVoidTy(), 
+    PtrTy, IntptrTy
+  );
+
+  BsanFuncLoadProv = M.getOrInsertFunction(
+    kBsanFuncLoadProvName,
+    IRB.getVoidTy(),
+    PtrTy, 
+    IntptrTy
+  );
+
+  BsanFuncAlloc = M.getOrInsertFunction(
+    kBsanFuncAllocName, 
+    IRB.getVoidTy(),
+    PtrTy, IntptrTy
+  );
+
+  BsanFuncAllocStack = M.getOrInsertFunction(
+    kBsanFuncAllocStackName,
+    IRB.getVoidTy(),
+    PtrTy, IntptrTy
+  );
+
+  BsanFuncDealloc = M.getOrInsertFunction(
+    kBsanFuncDeallocName, 
+    IRB.getVoidTy(), 
+    PtrTy
+  );
+
+  BsanFuncExposeTag = M.getOrInsertFunction(
+    kBsanFuncExposeTagName, 
+    IRB.getVoidTy(), 
+    PtrTy
+  );
+
+  BsanFuncRead = M.getOrInsertFunction(
+    kBsanFuncReadName, 
+    IRB.getVoidTy(),
+    PtrTy, IntptrTy, IntptrTy
+  );
+
+  BsanFuncWrite = M.getOrInsertFunction(
+    kBsanFuncWriteName, 
+    IRB.getVoidTy(),
+    PtrTy, IntptrTy, IntptrTy
+  );
+
   if (CompileKernel) {
     createKernelApi(M, TLI);
   } else {
@@ -398,12 +439,6 @@ void BorrowSanitizer::createKernelApi(Module &M, const TargetLibraryInfo &TLI) {
 void BorrowSanitizer::createUserspaceApi(Module &M,
                                          const TargetLibraryInfo &TLI) {
   IRBuilder<> IRB(*C);
-  RetvalTLS =
-      getOrInsertGlobal(M, "__bsan_retval_tls",
-                        ArrayType::get(IRB.getInt64Ty(), kRetvalTLSSize / 8));
-  ParamTLS =
-      getOrInsertGlobal(M, "__bsan_param_tls",
-                        ArrayType::get(IRB.getInt64Ty(), kParamTLSSize / 8));
 }
 
 bool BorrowSanitizer::instrumentFunction(Function &F,

@@ -8,7 +8,6 @@ using namespace __sanitizer;
 int BsanOnExit() { return 0; }
 
 INTERCEPTOR(void *, malloc, SIZE_T size) { return REAL(malloc)(size); }
-
 INTERCEPTOR(void, free, void *ptr) { return REAL(free)(ptr); }
 
 #define COMMON_INTERCEPT_FUNCTION_VER(name, ver)                               \
@@ -64,7 +63,7 @@ INTERCEPTOR(void, free, void *ptr) { return REAL(free)(ptr); }
 
 template <class Mmap>
 static void *mmap_interceptor(Mmap real_mmap, void *addr, SIZE_T length,
-                              int prot, int flags, int fd, OFF64_T offset) {
+                              int prot, int flags, int fd, OFF_T offset) {
   void *res = real_mmap(addr, length, prot, flags, fd, offset);
   return res;
 }
