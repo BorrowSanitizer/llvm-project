@@ -1,60 +1,76 @@
 #include "bsan.h"
 #include "bsan_interceptors.h"
+#include "bsan_internal.h"
 #include "bsan_rt.h"
-#include "sanitizer_common/sanitizer_common.h"
-#include "sanitizer_common/sanitizer_stacktrace.h"
-#include <stdlib.h>
-#include <sys/mman.h>
 
+using namespace bsan_rt;
 using namespace __sanitizer;
 using namespace __bsan;
-using namespace bsan_rt;
 
-namespace __bsan {
-bool bsan_initialized = false;
-bool bsan_init_is_running = false;
-bool bsan_deinit_is_running = false;
-BsanAllocator gBsanAlloc;
-} // namespace __bsan
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
+__bsan_copy(uptr src_ptr, uptr dst_ptr, uptr access_size) {
+  BsanCopy(src_ptr, dst_ptr, access_size);
+}
 
-
-extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __bsan_preinit() {}
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __bsan_preinit() {
+  BsanInitFromRtl();
+}
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __bsan_init() {
-  CHECK(!bsan_init_is_running);
-  if (bsan_initialized)
-    return;
-  bsan_init_is_running = true;
-  InitializeInterceptors();
-  gBsanAlloc.malloc = REAL(malloc);
-  gBsanAlloc.free = REAL(free);
-  gBsanAlloc.mmap = mmap;
-  gBsanAlloc.munmap = munmap;
-  bsan_init(gBsanAlloc);
-  bsan_initialized = true;
-  bsan_init_is_running = false;
+  BsanInitFromRtl();
 }
 
-extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __bsan_func_entry() {}
-
-extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __bsan_func_exit() {}
-
-extern "C" SANITIZER_INTERFACE_ATTRIBUTE usize __bsan_retag(void *ptr,
-                                                            u8 retag_kind,
-                                                            u8 place_kind) {
-  return bsan_retag(ptr, retag_kind, place_kind);
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __bsan_deinit() {
+  BsanDeinitFromRtl();
 }
 
-extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __bsan_write(void *ptr,
-                                                           u64 access_size) {
-  bsan_write(ptr, access_size);
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __bsan_push_frame() {
+  BsanPushFrame();
 }
 
-extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __bsan_read(void *ptr,
-                                                          u64 access_size) {
-  bsan_read(ptr, access_size);
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __bsan_pop_frame() {
+  BsanPopFrame();
 }
 
-extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __bsan_expose_tag(void *ptr) {
-  bsan_expose_tag(ptr);
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
+__bsan_retag(Provenance *ptr, u8 retag_kind, u8 place_kind) {
+  BsanRetag(ptr, retag_kind, place_kind);
+}
+
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
+__bsan_store_prov(Provenance *prov, uptr addr) {
+  BsanStoreProv(prov, addr);
+}
+
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __bsan_load_prov(Provenance *prov,
+                                                               uptr addr) {
+  return BsanLoadProv(prov, addr);
+}
+
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __bsan_alloc(Provenance *prov,
+                                                           uptr size) {
+  BsanAlloc(prov, size);
+}
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
+__bsan_alloc_stack(Provenance *prov, uptr size) {
+  BsanAllocStack(prov, size);
+}
+
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __bsan_dealloc(Provenance *prov) {
+  return BsanDealloc(prov);
+}
+
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
+__bsan_expose_tag(Provenance const *prov) {
+  BsanExposeTag(prov);
+}
+
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
+__bsan_read(Provenance const *prov, uptr ptr, uptr access_size) {
+  BsanRead(prov, ptr, access_size);
+}
+
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
+__bsan_write(Provenance const *prov, uptr ptr, uptr access_size) {
+  BsanWrite(prov, ptr, access_size);
 }
