@@ -12,6 +12,7 @@
 #include "llvm/Analysis/GlobalsModRef.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 
+#include "llvm/IR/DIBuilder.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/InstVisitor.h"
 #include "llvm/IR/Module.h"
@@ -19,7 +20,6 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/DebugCounter.h"
-
 #include "llvm/Transforms/Utils/EscapeEnumerator.h"
 
 using namespace llvm;
@@ -27,12 +27,31 @@ using namespace llvm;
 #define DEBUG_TYPE "bsan"
 
 // Constants:
+const char kBsanPrefix[] = "__bsan_";
 const char kBsanModuleCtorName[] = "bsan.module_ctor";
 const char kBsanModuleDtorName[] = "bsan.module_dtor";
-const char kBsanInitName[] = "__bsan_init";
-const char kBsanFuncEntryName[] = "__bsan_func_entry";
-const char kBsanFuncExitName[] = "__bsan_func_exit";
-const char kBsanRetagName[] = "__bsan_retag";
+const char kBsanFuncInitName[] = "__bsan_init";
+const char kBsanFuncDeinitName[] = "__bsan_deinit";
+
+const char kBsanFuncPushFrameName[] = "__bsan_push_frame";
+const char kBsanFuncPopFrameName[] = "__bsan_pop_frame";
+const char kBsanFuncCopyName[] = "__bsan_copy";
+const char kBsanFuncRetagName[] = "__bsan_retag";
+const char kBsanFuncStoreProvName[] = "__bsan_store_prov";
+const char kBsanFuncLoadProvName[] = "__bsan_load_prov";
+const char kBsanFuncAllocName[] = "__bsan_alloc";
+const char kBsanFuncAllocStackName[] = "__bsan_alloc_stack";
+const char kBsanFuncDeallocName[] = "__bsan_dealloc";
+const char kBsanFuncExposeTagName[] = "__bsan_expose_tag";
+const char kBsanFuncReadName[] = "__bsan_read";
+const char kBsanFuncWriteName[] = "__bsan_write";
+
+// Provenance is three words
+static const unsigned kProvenanceSize = 24;
+// 100 Provenance entries for parameters
+static const unsigned kParamTLSSize = 100 * kProvenanceSize;
+// 1 Provenance entry for return value
+static const unsigned kRetvalTLSSize = kParamTLSSize;
 
 // Command-line flags:
 static cl::opt<bool>
@@ -40,15 +59,15 @@ static cl::opt<bool>
                   cl::desc("Enable KernelBorrowSanitizer instrumentation"),
                   cl::Hidden, cl::init(false));
 
-static cl::opt<bool> ClBsanAliasingModel(
-    "bsan-model",
-    cl::desc("Choose which of Rust's aliasing models to use (stack, tree)."),
-    cl::Hidden, cl::init("tree"));
-
 static cl::opt<bool>
     ClWithComdat("bsan-with-comdat",
                  cl::desc("Place BSan constructors in comdat sections"),
                  cl::Hidden, cl::init(true));
+
+static cl::opt<bool> ClSingleStack(
+    "bsan-single-stack-alloc",
+    cl::desc("Treat all static stack allocations as a single allocation."),
+    cl::Hidden, cl::init(false));
 
 static cl::opt<bool> ClHandleCxxExceptions(
     "bsan-handle-cxx-exceptions", cl::init(true),
@@ -58,85 +77,190 @@ static cl::opt<bool> ClHandleCxxExceptions(
 namespace {
 
 struct BorrowSanitizer {
-  BorrowSanitizer(Module &M) {
+  BorrowSanitizer(Module &M)
+      : CompileKernel(ClEnableKbsan.getNumOccurrences() > 0 ? ClEnableKbsan
+                                                            : CompileKernel),
+        UseCtorComdat(ClWithComdat && !this->CompileKernel),
+        SingleStack(ClSingleStack) {
     C = &(M.getContext());
     DL = &M.getDataLayout();
     LongSize = M.getDataLayout().getPointerSizeInBits();
+    TargetTriple = Triple(M.getTargetTriple());
     Int8Ty = Type::getInt8Ty(*C);
     PtrTy = PointerType::getUnqual(*C);
-    TargetTriple = Triple(M.getTargetTriple());
+    IntptrTy = Type::getIntNTy(*C, LongSize);
+    ProvenanceTy = StructType::get(IntptrTy, IntptrTy, PtrTy);
   }
-  bool instrumentAlloca(Instruction &I);
-  bool instrumentMemIntrinsic(Instruction &I);
-  bool instrumentLoad(Instruction &I);
-  bool instrumentStore(Instruction &I);
-  bool instrumentRetag(Instruction &I);
-  bool instrumentCall(Instruction &I);
-  bool instrumentIntToPtr(Instruction &I);
-  bool instrumentPtrToInt(Instruction &I);
+  bool instrumentModule(Module &);
   bool instrumentFunction(Function &F, const TargetLibraryInfo &TLI);
+  void createUserspaceApi(Module &M, const TargetLibraryInfo &TLI);
+  void createKernelApi(Module &M, const TargetLibraryInfo &TLI);
+
+  TypeSize getAllocaSizeInBytes(const AllocaInst &AI) const {
+    return *AI.getAllocationSize(AI.getDataLayout());
+  }
 
 private:
   friend struct BorrowSanitizerVisitor;
 
   void initializeCallbacks(Module &M, const TargetLibraryInfo &TLI);
+  void instrumentGlobals(IRBuilder<> &IRB, Module &M, bool *CtorComdat);
+  Instruction *CreateBsanModuleDtor(Module &M);
 
+  bool CompileKernel;
+  bool UseCtorComdat;
+  bool SingleStack;
   LLVMContext *C;
   const DataLayout *DL;
   int LongSize;
   Triple TargetTriple;
   Type *Int8Ty;
   PointerType *PtrTy;
-
-  FunctionCallee BsanRetagFunc;
-  FunctionCallee BsanFuncEntry;
-  FunctionCallee BsanFuncExit;
-};
-
-class ModuleBorrowSanitizer {
-public:
-  ModuleBorrowSanitizer(Module &M)
-      : CompileKernel(ClEnableKbsan.getNumOccurrences() > 0 ? ClEnableKbsan
-                                                            : CompileKernel),
-        UseCtorComdat(ClWithComdat && !this->CompileKernel) {
-    C = &(M.getContext());
-    int LongSize = M.getDataLayout().getPointerSizeInBits();
-    Int8Ty = Type::getInt8Ty(*C);
-    IntptrTy = Type::getIntNTy(*C, LongSize);
-    PtrTy = PointerType::getUnqual(*C);
-    TargetTriple = Triple(M.getTargetTriple());
-  }
-  bool instrumentModule(Module &);
-
-private:
-  void initializeCallbacks(Module &);
-  void instrumentGlobals(IRBuilder<> &IRB, Module &M, bool *CtorComdat);
-  Instruction *CreateBsanModuleDtor(Module &M);
-  bool CompileKernel;
-  bool UseCtorComdat;
-  LLVMContext *C;
-  Type *Int8Ty;
   Type *IntptrTy;
-  PointerType *PtrTy;
-  Triple TargetTriple;
+  StructType *ProvenanceTy;
+
+  Value *ParamTLS;
+  Value *RetvalTLS;
+
+  bool CallbacksInitialized = false;
+
   Function *BsanCtorFunction = nullptr;
   Function *BsanDtorFunction = nullptr;
+  FunctionCallee BsanFuncRetag;
+  FunctionCallee BsanFuncPushFrame;
+  FunctionCallee BsanFuncPopFrame;
+  FunctionCallee BsanFuncCopy;
+  FunctionCallee BsanFuncStoreProv;
+  FunctionCallee BsanFuncLoadProv;
+  FunctionCallee BsanFuncAlloc;
+  FunctionCallee BsanFuncAllocStack;
+  FunctionCallee BsanFuncDealloc;
+  FunctionCallee BsanFuncExposeTag;
+  FunctionCallee BsanFuncRead;
+  FunctionCallee BsanFuncWrite;
 };
 
+struct BorrowSanitizerVisitor : public InstVisitor<BorrowSanitizerVisitor> {
+  Function &F;
+  BorrowSanitizer &BS;
+  DIBuilder DIB;
+  LLVMContext *C;
+  const TargetLibraryInfo *TLI;
+
+  uint64_t StackOffset = 0;
+
+  SmallVector<Instruction *, 16> Instructions;
+  SmallVector<AllocaInst *, 16> StaticAllocaVec;
+  SmallVector<AllocaInst *, 1> DynamicAllocaVec;
+  SmallVector<StoreInst *, 16> StoreVec;
+
+  ValueMap<Value *, Value *> ProvenanceMap;
+  ValueMap<Value *, ArrayRef<Value *>> AggregateProvenanceMap;
+  Value *CurrentShadowStackPointer;
+
+  BorrowSanitizerVisitor(Function &F, BorrowSanitizer &BS,
+                         const TargetLibraryInfo &TLI)
+      : F(F), BS(BS), DIB(*F.getParent(), /*AllowUnresolved*/ false), C(BS.C),
+        TLI(&TLI) {
+    removeUnreachableBlocks(F);
+  }
+
+  void instrumentLoad(LoadInst &I) {}
+
+  void instrumentVectorLoad(LoadInst &I) {}
+
+  void instrumentAggregateLoad(LoadInst &I) {}
+
+  void instrumentStore(StoreInst &I) {}
+
+  void instrumentVectorStore(StoreInst &I) {}
+
+  void instrumentAggregateStore(StoreInst &I) {}
+
+  void instrumentRetag(IntrinsicInst &I) {
+    CallInst *CIRetag = CallInst::Create(
+        BS.BsanFuncRetag, {I.getOperand(0), I.getOperand(1), I.getOperand(2)});
+    ReplaceInstWithInst(&I, CIRetag);
+  }
+
+  bool runOnFunction() {
+    for (BasicBlock *BB : depth_first(&F.getEntryBlock()))
+      visit(*BB);
+
+    if (Instructions.empty())
+      return false;
+
+    initStack();
+
+    for (Instruction *I : Instructions) {
+      InstVisitor<BorrowSanitizerVisitor>::visit(*I);
+    }
+
+    deinitStack();
+    return true;
+  }
+
+  void initStack() {
+    InstrumentationIRBuilder IRB(F.getEntryBlock().getFirstNonPHI());
+    CurrentShadowStackPointer = IRB.CreateCall(BS.BsanFuncPushFrame);
+  }
+
+  void deinitStack() {
+    EscapeEnumerator EE(F, "bsan_cleanup", ClHandleCxxExceptions);
+    while (IRBuilder<> *AtExit = EE.Next()) {
+      InstrumentationIRBuilder::ensureDebugInfo(*AtExit, F);
+      AtExit->CreateCall(BS.BsanFuncPopFrame);
+    }
+  }
+
+  bool shouldInstrumentAlloca(AllocaInst &AI) {
+    bool ShouldInstrument =
+        // alloca() may be called with 0 size, ignore it.
+        (AI.getAllocatedType()->isSized() &&
+         !BS.getAllocaSizeInBytes(AI).isZero());
+    return ShouldInstrument;
+  }
+
+  using InstVisitor<BorrowSanitizerVisitor>::visit;
+  void visit(Instruction &I) {
+    if (I.getMetadata(LLVMContext::MD_nosanitize))
+      return;
+    if (I.getOpcode() == Instruction::Alloca) {
+      AllocaInst &AI = static_cast<AllocaInst &>(I);
+      if (shouldInstrumentAlloca(AI)) {
+        if (AI.isStaticAlloca())
+          StaticAllocaVec.push_back(&AI);
+        else
+          DynamicAllocaVec.push_back(&AI);
+      }
+    } else {
+      Instructions.push_back(&I);
+    }
+  }
+
+  void visitIntrinsicInst(IntrinsicInst &I) {
+    switch (I.getIntrinsicID()) {
+    case Intrinsic::bsan_retag:
+      instrumentRetag(I);
+      break;
+    default:
+      break;
+    }
+  }
+};
 } // end anonymous namespace
 
 PreservedAnalyses BorrowSanitizerPass::run(Module &M,
                                            ModuleAnalysisManager &MAM) {
-  ModuleBorrowSanitizer ModuleSanitizer(M);
+  BorrowSanitizer ModuleSanitizer(M);
   bool Modified = false;
+
   auto &FAM = MAM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
 
   for (Function &F : M) {
-    BorrowSanitizer FunctionSanitizer(M);
     const TargetLibraryInfo &TLI = FAM.getResult<TargetLibraryAnalysis>(F);
-    Modified |= FunctionSanitizer.instrumentFunction(F, TLI);
+    Modified |= ModuleSanitizer.instrumentFunction(F, TLI);
   }
-  Modified |= ModuleSanitizer.instrumentModule(M);
   if (!Modified)
     return PreservedAnalyses::all();
   Modified |= ModuleSanitizer.instrumentModule(M);
@@ -149,28 +273,38 @@ PreservedAnalyses BorrowSanitizerPass::run(Module &M,
   return PA;
 }
 
-Instruction *ModuleBorrowSanitizer::CreateBsanModuleDtor(Module &M) {
+Instruction *BorrowSanitizer::CreateBsanModuleDtor(Module &M) {
+  IRBuilder<> IRB(M.getContext());
+
   BsanDtorFunction = Function::createWithDefaultAttr(
-      FunctionType::get(Type::getVoidTy(*C), false),
-      GlobalValue::InternalLinkage, 0, kBsanModuleDtorName, &M);
+      FunctionType::get(IRB.getVoidTy(), false), GlobalValue::InternalLinkage,
+      0, kBsanModuleDtorName, &M);
   BsanDtorFunction->addFnAttr(Attribute::NoUnwind);
-  // Ensure Dtor cannot be discarded, even if in a comdat.
-  appendToUsed(M, {BsanDtorFunction});
+
   BasicBlock *BsanDtorBB = BasicBlock::Create(*C, "", BsanDtorFunction);
-  return ReturnInst::Create(*C, BsanDtorBB);
+  ReturnInst *BsanDtorRet = ReturnInst::Create(*C, BsanDtorBB);
+
+  auto *FnTy = FunctionType::get(IRB.getVoidTy(), false);
+  FunctionCallee DeinitFn = M.getOrInsertFunction(kBsanFuncDeinitName, FnTy);
+
+  IRB.SetInsertPoint(BsanDtorRet);
+  CallInst *DeinitCall = IRB.CreateCall(DeinitFn, {});
+
+  appendToUsed(M, {BsanDtorFunction});
+  return DeinitCall;
 }
 
-bool ModuleBorrowSanitizer::instrumentModule(Module &M) {
+bool BorrowSanitizer::instrumentModule(Module &M) {
   if (CompileKernel) {
     // The kernel always builds with its own runtime, and therefore does not
     // need the init and version check calls.
     BsanCtorFunction = createSanitizerCtor(M, kBsanModuleCtorName);
   } else {
-    // TODO(ian): add version check.
+    // TODO: add version check.
     std::tie(BsanCtorFunction, std::ignore) =
-        createSanitizerCtorAndInitFunctions(M, kBsanModuleCtorName,
-                                            kBsanInitName, /*InitArgTypes=*/{},
-                                            /*InitArgs=*/{}, "");
+        createSanitizerCtorAndInitFunctions(
+            M, kBsanModuleCtorName, kBsanFuncInitName, /*InitArgTypes=*/{},
+            /*InitArgs=*/{}, "");
   }
 
   bool CtorComdat = true;
@@ -190,157 +324,101 @@ bool ModuleBorrowSanitizer::instrumentModule(Module &M) {
 
     BsanDtorFunction->setComdat(M.getOrInsertComdat(kBsanModuleDtorName));
     appendToGlobalDtors(M, BsanDtorFunction, Priority, BsanDtorFunction);
-
   } else {
     appendToGlobalCtors(M, BsanCtorFunction, Priority);
     appendToGlobalDtors(M, BsanDtorFunction, Priority);
   }
-
   return true;
 }
 
-void ModuleBorrowSanitizer::instrumentGlobals(IRBuilder<> &IRB, Module &M,
-                                              bool *CtorComdat) {
-  CreateBsanModuleDtor(M);
+static Constant *getOrInsertGlobal(Module &M, StringRef Name, Type *Ty) {
+  return M.getOrInsertGlobal(Name, Ty, [&] {
+    return new GlobalVariable(M, Ty, false, GlobalVariable::ExternalLinkage,
+                              nullptr, Name, nullptr,
+                              GlobalVariable::InitialExecTLSModel);
+  });
 }
 
-void ModuleBorrowSanitizer::initializeCallbacks(Module &M) {
-  IRBuilder<> IRB(*C);
+void BorrowSanitizer::instrumentGlobals(IRBuilder<> &IRB, Module &M,
+                                        bool *CtorComdat) {
+  CreateBsanModuleDtor(M);
 }
 
 void BorrowSanitizer::initializeCallbacks(Module &M,
                                           const TargetLibraryInfo &TLI) {
+  // Only do this once.
+  if (CallbacksInitialized)
+    return;
+
   IRBuilder<> IRB(*C);
-  BsanRetagFunc = M.getOrInsertFunction(kBsanRetagName, IRB.getVoidTy(), PtrTy,
-                                        Int8Ty, Int8Ty);
-  BsanFuncEntry = M.getOrInsertFunction(kBsanFuncEntryName, IRB.getVoidTy());
-  BsanFuncExit = M.getOrInsertFunction(kBsanFuncExitName, IRB.getVoidTy());
+  BsanFuncRetag = M.getOrInsertFunction(kBsanFuncRetagName, IRB.getVoidTy(),
+                                        PtrTy, Int8Ty, Int8Ty);
 
+  FunctionType *PushFrameTy = FunctionType::get(PtrTy, /*isVarArg=*/false);
+  BsanFuncPushFrame =
+      M.getOrInsertFunction(kBsanFuncPushFrameName, PushFrameTy);
+
+  FunctionType *PopFrameTy =
+      FunctionType::get(IRB.getVoidTy(), /*isVarArg=*/false);
+  BsanFuncPopFrame = M.getOrInsertFunction(kBsanFuncPopFrameName, PopFrameTy);
+
+  BsanFuncCopy = M.getOrInsertFunction(kBsanFuncCopyName, IRB.getVoidTy(),
+                                      IntptrTy, IntptrTy, IntptrTy);
+  BsanFuncStoreProv = M.getOrInsertFunction(kBsanFuncStoreProvName,
+                                            IRB.getVoidTy(), PtrTy, IntptrTy);
+  BsanFuncLoadProv = M.getOrInsertFunction(kBsanFuncLoadProvName,
+                                           IRB.getVoidTy(), PtrTy, IntptrTy);
+
+  BsanFuncAlloc = M.getOrInsertFunction(kBsanFuncAllocName, IRB.getVoidTy(),
+                                        PtrTy, IntptrTy);
+  BsanFuncAllocStack = M.getOrInsertFunction(kBsanFuncAllocStackName,
+                                             IRB.getVoidTy(), PtrTy, IntptrTy);
+
+  BsanFuncDealloc =
+      M.getOrInsertFunction(kBsanFuncDeallocName, IRB.getVoidTy(), PtrTy);
+  BsanFuncExposeTag =
+      M.getOrInsertFunction(kBsanFuncExposeTagName, IRB.getVoidTy(), PtrTy);
+  BsanFuncRead = M.getOrInsertFunction(kBsanFuncReadName, IRB.getVoidTy(),
+                                       PtrTy, IntptrTy, IntptrTy);
+  BsanFuncWrite = M.getOrInsertFunction(kBsanFuncWriteName, IRB.getVoidTy(),
+                                        PtrTy, IntptrTy, IntptrTy);
+  if (CompileKernel) {
+    createKernelApi(M, TLI);
+  } else {
+    createUserspaceApi(M, TLI);
+  }
+
+  CallbacksInitialized = true;
 }
 
-bool BorrowSanitizer::instrumentAlloca(Instruction &I) {
-  return false;
+void BorrowSanitizer::createKernelApi(Module &M, const TargetLibraryInfo &TLI) {
+  IRBuilder<> IRB(*C);
 }
 
-bool BorrowSanitizer::instrumentMemIntrinsic(Instruction &I) {
-  return false;
-}
-
-bool BorrowSanitizer::instrumentLoad(Instruction &I) {
-  return false;
-}
-
-bool BorrowSanitizer::instrumentStore(Instruction &I) {
-  return false;
-}
-
-bool BorrowSanitizer::instrumentCall(Instruction &I) {
-  return false;
-}
-
-bool BorrowSanitizer::instrumentIntToPtr(Instruction &I) {
-  return false;
-}
-
-bool BorrowSanitizer::instrumentPtrToInt(Instruction &I) {
-  return false;
-}
-
-bool BorrowSanitizer::instrumentRetag(Instruction &I) {
-  CallInst* CIRetag = CallInst::Create(BsanRetagFunc, {I.getOperand(0), I.getOperand(1), I.getOperand(2)});
-  ReplaceInstWithInst(&I, CIRetag);
-  return true;
+void BorrowSanitizer::createUserspaceApi(Module &M,
+                                         const TargetLibraryInfo &TLI) {
+  IRBuilder<> IRB(*C);
+  RetvalTLS =
+      getOrInsertGlobal(M, "__bsan_retval_tls",
+                        ArrayType::get(IRB.getInt64Ty(), kRetvalTLSSize / 8));
+  ParamTLS =
+      getOrInsertGlobal(M, "__bsan_param_tls",
+                        ArrayType::get(IRB.getInt64Ty(), kParamTLSSize / 8));
 }
 
 bool BorrowSanitizer::instrumentFunction(Function &F,
                                          const TargetLibraryInfo &TLI) {
   if (F.empty())
     return false;
-
   if (F.getLinkage() == GlobalValue::AvailableExternallyLinkage)
     return false;
-  if (F.getName().starts_with("__bsan_"))
+  if (F.getName().starts_with(kBsanPrefix))
     return false;
   if (F.isPresplitCoroutine())
     return false;
 
   initializeCallbacks(*F.getParent(), TLI);
 
-  SmallVector<Instruction *, 8> Loads;
-  SmallVector<Instruction *, 8> Stores;
-  SmallVector<Instruction *, 8> Retags;
-  SmallVector<Instruction *, 8> Allocas;
-  SmallVector<Instruction *, 8> MemIntrinsics;
-  SmallVector<Instruction *, 8> Calls;
-
-  SmallVector<Instruction *, 8> PtrToInts;
-  SmallVector<Instruction *, 8> IntToPtrs;
-
-  for (auto &BB : F) {
-    for (auto &Inst : BB) {
-      // Skip instructions inserted by another sanitizer
-      if (Inst.hasMetadata(LLVMContext::MD_nosanitize))
-        continue;
-
-      unsigned Opc = Inst.getOpcode();
-      switch (Opc) {
-      // Memory instructions
-      case Instruction::Load: {
-        Loads.push_back(&Inst);
-      } break;
-      case Instruction::Store: {
-        Stores.push_back(&Inst);
-      } break;
-      case Instruction::Alloca: {
-        Allocas.push_back(&Inst);
-      } break;
-      case Instruction::Call: {
-        if (IntrinsicInst *II = dyn_cast<IntrinsicInst>(&Inst)) {
-          if (II->getIntrinsicID() == Intrinsic::bsan_retag) {
-            Retags.push_back(&Inst);
-          } else if (MemIntrinsic *MI = dyn_cast<MemIntrinsic>(II)) {
-            MemIntrinsics.push_back(&Inst);
-          }
-        } else {
-          Calls.push_back(&Inst);
-        }
-      } break;
-      }
-    }
-  }
-
-  InstrumentationIRBuilder IRB(F.getEntryBlock().getFirstNonPHI());
-  IRB.CreateCall(BsanFuncEntry, {});
-
-  
-  EscapeEnumerator EE(F, "bsan_cleanup", ClHandleCxxExceptions);
-  while (IRBuilder<> *AtExit = EE.Next()) {
-    InstrumentationIRBuilder::ensureDebugInfo(*AtExit, F);
-    AtExit->CreateCall(BsanFuncExit, {});
-  }
-
-  for (auto *I : Allocas) {
-    instrumentAlloca(*I);
-  }
-
-  for (auto *I : MemIntrinsics) {
-    instrumentMemIntrinsic(*I);
-  }
-
-  for (auto *I : Loads) {
-    instrumentLoad(*I);
-  }
-
-  for (auto *I : Stores) {
-    instrumentStore(*I);
-  }
-
-  for (auto *I : Retags) {
-    instrumentRetag(*I);
-  }
-
-  for (auto *I : Calls) {
-    instrumentCall(*I);
-  }
-  return true;
+  BorrowSanitizerVisitor Visitor(F, *this, TLI);
+  return Visitor.runOnFunction();
 }
