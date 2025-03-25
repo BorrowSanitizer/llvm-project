@@ -11,6 +11,8 @@ using namespace bsan_rt;
 namespace __bsan {
 
 extern "C" void BsanPrintln(char const *ptr) { Printf("%s\n", ptr); }
+extern "C" void BsanExit() { Die(); }
+
 
 const BsanAllocHooks gBsanAllocHooks =
     BsanAllocHooks{.malloc = REAL(malloc), .free = REAL(free)};
@@ -20,6 +22,7 @@ const BsanHooks gBsanHooks = BsanHooks{
     .mmap = REAL(mmap),
     .munmap = REAL(munmap),
     .print = BsanPrintln,
+    .exit = BsanExit 
 };
 
 static StaticSpinMutex bsan_inited_mutex;
