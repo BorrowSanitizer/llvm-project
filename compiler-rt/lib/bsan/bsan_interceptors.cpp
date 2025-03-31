@@ -135,7 +135,11 @@ void InitializeBsanInterceptors() {
   static bool was_called_once;
   CHECK(!was_called_once);
   was_called_once = true;
+  BSAN_INTERCEPT_FUNC(malloc);
+  BSAN_INTERCEPT_FUNC(free);
+  
   InitializeCommonInterceptors();
+
 }
 
 } // namespace __bsan
