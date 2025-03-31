@@ -55,7 +55,7 @@ add_compiler_rt_object_libraries(RTBsan
   CFLAGS ${BSAN_CFLAGS}
   DEPS ${BSAN_DEPS})
 
-if(!APPLE)
+if(NOT APPLE)
   add_compiler_rt_object_libraries(RTBsan_preinit
     OS ${SANITIZER_COMMON_SUPPORTED_OS}
     ARCHS ${BSAN_SUPPORTED_ARCH}
@@ -86,6 +86,7 @@ else()
     STATIC
     ARCHS ${BSAN_SUPPORTED_ARCH}
     OBJECT_LIBS RTBsan
+                RTBsan_preinit
                 ${BSAN_COMMON_RUNTIME_OBJECT_LIBS}
     LINK_FLAGS ${BSAN_LINK_FLAGS}
     CFLAGS ${BSAN_CFLAGS}
