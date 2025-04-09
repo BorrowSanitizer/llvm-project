@@ -13,16 +13,6 @@ namespace __bsan {
 extern "C" void BsanPrintln(char const *ptr) { Printf("%s\n", ptr); }
 extern "C" void BsanExit() { Die(); }
 
-const BsanAllocHooks gBsanAllocHooks =
-    BsanAllocHooks{.malloc = REAL(malloc), .free = REAL(free)};
-
-const BsanHooks gBsanHooks = BsanHooks{
-    .alloc = gBsanAllocHooks,
-    .mmap = REAL(mmap),
-    .munmap = REAL(munmap),
-    .print = BsanPrintln,
-    .exit = BsanExit 
-};
 
 static StaticSpinMutex bsan_inited_mutex;
 static atomic_uint8_t bsan_inited = {0};
@@ -45,6 +35,17 @@ bool BsanInitInternal() {
   SanitizerToolName = "BorrowSanitizer";
   __interception::DoesNotSupportStaticLinking();
   InitializeBsanInterceptors();
+  BsanAllocHooks gBsanAllocHooks = BsanAllocHooks{
+    .malloc = REAL(malloc),
+    .free = REAL(free)
+  };
+  BsanHooks gBsanHooks = BsanHooks{
+    .alloc = gBsanAllocHooks,
+    .mmap = REAL(mmap),
+    .munmap = REAL(munmap),
+    .print = BsanPrintln,
+    .exit = BsanExit 
+};
   bsan_rt::bsan_init(gBsanHooks);
   SetBsanInited();
   return true;
@@ -126,8 +127,8 @@ void BsanLoadProv(Provenance *prov, uptr addr) {
   bsan_rt::bsan_load_prov(prov, addr);
 }
 
-void BsanAlloc(Provenance *prov, uptr size) {
-  return bsan_rt::bsan_alloc(GET_CURRENT_PC(), prov, size);
+void BsanAlloc(Provenance *prov, void* addr, uptr size) {
+  return bsan_rt::bsan_alloc(GET_CURRENT_PC(), prov, addr, size);
 }
 
 void BsanAllocStack(Provenance *prov, uptr size) {
