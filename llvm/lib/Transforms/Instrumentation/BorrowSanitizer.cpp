@@ -159,6 +159,24 @@ struct BorrowSanitizerVisitor : public InstVisitor<BorrowSanitizerVisitor> {
     removeUnreachableBlocks(F);
   }
 
+  /// Set Provenance to be the provenance value for V.
+  void setProvenance(Value *V, Value *Provenance) {
+    assert(!ProvenanceMap.count(V) && "Values may only have one provenance value");
+    ProvenanceMap[V] = Provenance;
+  }
+
+  /// Gets the Provenance value for V
+  Value *getProvenance(Value *V) {
+    Value *Provenance = ProvenanceMap[V];
+    assert(Provenance && "Missing provenance");
+    return Provenance;
+  }
+
+  /// Get the Provenance for i-th argument of the instruction I.
+  Value *getProvenance(Instruction *I, int i) {
+    return getProvenance(I->getOperand(i));
+  }
+
   void instrumentLoad(LoadInst &I) {}
 
   void instrumentVectorLoad(LoadInst &I) {}
@@ -197,6 +215,7 @@ struct BorrowSanitizerVisitor : public InstVisitor<BorrowSanitizerVisitor> {
   void initStack() {
     InstrumentationIRBuilder IRB(F.getEntryBlock().getFirstNonPHI());
     CurrentShadowStackPointer = IRB.CreateCall(BS.BsanFuncPushFrame);
+
   }
 
   void deinitStack() {
@@ -216,6 +235,8 @@ struct BorrowSanitizerVisitor : public InstVisitor<BorrowSanitizerVisitor> {
   }
 
   using InstVisitor<BorrowSanitizerVisitor>::visit;
+
+  // We use this function to visit all instructions in depth-first order. 
   void visit(Instruction &I) {
     if (I.getMetadata(LLVMContext::MD_nosanitize))
       return;
