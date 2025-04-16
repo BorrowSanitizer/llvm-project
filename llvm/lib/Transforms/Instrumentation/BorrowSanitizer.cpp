@@ -21,6 +21,8 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/DebugCounter.h"
 #include "llvm/Transforms/Utils/EscapeEnumerator.h"
+#include "llvm/Analysis/MemoryBuiltins.h"
+#include "llvm/ADT/PostOrderIterator.h"
 
 using namespace llvm;
 
@@ -177,6 +179,19 @@ struct BorrowSanitizerVisitor : public InstVisitor<BorrowSanitizerVisitor> {
     return getProvenance(I->getOperand(i));
   }
 
+  void instrumentAlloc(CallBase &I, APInt &AllocSize) {
+    IRBuilder<> IRB(&I);
+    Value *AllocSizeValue = ConstantInt::get(BS.IntptrTy, AllocSize.getZExtValue());
+    Value *AllocProv = IRB.CreateCall(BS.BsanFuncAlloc, {&I, AllocSizeValue});
+    setProvenance(&I, AllocProv);
+  }
+
+  void instrumentDealloc(CallBase &I) {
+    IRBuilder<> IRB(&I);
+    Value *AllocProv = getProvenance(&I);
+    IRB.CreateCall(BS.BsanFuncDealloc, {AllocProv});
+  }
+
   void instrumentLoad(LoadInst &I) {}
 
   void instrumentVectorLoad(LoadInst &I) {}
@@ -196,9 +211,10 @@ struct BorrowSanitizerVisitor : public InstVisitor<BorrowSanitizerVisitor> {
   }
 
   bool runOnFunction() {
-    for (BasicBlock *BB : depth_first(&F.getEntryBlock()))
+    for (BasicBlock *BB : ReversePostOrderTraversal<BasicBlock *>(&F.getEntryBlock())) {
       visit(*BB);
-
+    }
+    
     if (Instructions.empty())
       return false;
 
@@ -260,6 +276,21 @@ struct BorrowSanitizerVisitor : public InstVisitor<BorrowSanitizerVisitor> {
       break;
     default:
       break;
+    }
+  }
+
+  void visitCallBase(CallBase &I) {   
+    LibFunc TLIFn;
+    Function *Callee = I.getCalledFunction();
+    if(isAllocLikeFn(&I, TLI)) {
+      APInt AllocSize = getAllocSize(&I, TLI)
+        .value_or(APInt::getZero(BS.IntptrTy->getIntegerBitWidth()));
+      instrumentAlloc(I, AllocSize);
+    }else if(TLI->getLibFunc(*Callee, TLIFn) && TLI->has(TLIFn) &&
+      isLibFreeFunction(Callee, TLIFn)) {
+      instrumentDealloc(I);
+    }else {
+      //TODO: handle passing provenance through the shadow stack or TLS.
     }
   }
 };
@@ -357,6 +388,7 @@ static Constant *getOrInsertGlobal(Module &M, StringRef Name, Type *Ty) {
 void BorrowSanitizer::instrumentGlobals(IRBuilder<> &IRB, Module &M,
                                         bool *CtorComdat) {
   CreateBsanModuleDtor(M);
+
 }
 
 void BorrowSanitizer::initializeCallbacks(Module &M,
