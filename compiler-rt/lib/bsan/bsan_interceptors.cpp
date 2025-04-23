@@ -7,7 +7,20 @@ using namespace __sanitizer;
 
 int BsanOnExit() { return 0; }
 
-INTERCEPTOR(void *, malloc, SIZE_T size) { return REAL(malloc)(size); }
+INTERCEPTOR(void *, malloc, SIZE_T size) { 
+  //TODO(obraunsdorf): this is just for testing/showcasing BsanAlloc at the moment.
+  // Eventually, we don't want to intercept it but instead instrument uses of malloc
+  // and free in the compiler instrumentation pass.
+  void* addr = REAL(malloc)(size);
+  if (UNLIKELY(!BsanInited())) {
+    return addr;
+  }
+
+  Provenance prov;
+  BsanAlloc(&prov, addr, size);
+  Printf("BsanAllocDone: prov alloc_id: %lu, borrow_tag: %lu, lock_address: %p\n", prov.alloc_id, prov.borrow_tag, prov.lock_address);
+  return addr;
+}
 INTERCEPTOR(void, free, void *ptr) { return REAL(free)(ptr); }
 
 #define COMMON_INTERCEPT_FUNCTION_VER(name, ver)                               \
