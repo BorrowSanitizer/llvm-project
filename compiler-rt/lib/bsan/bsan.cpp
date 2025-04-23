@@ -53,8 +53,9 @@ extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __bsan_load_prov(Provenance *prov,
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __bsan_alloc(Provenance *prov,
+                                                           void *addr,
                                                            uptr size) {
-  BsanAlloc(prov, size);
+  BsanAlloc(prov, addr, size);
 }
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
 __bsan_alloc_stack(Provenance *prov, uptr size) {

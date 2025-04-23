@@ -25,7 +25,7 @@ void BsanRead(Provenance const *prov, uptr ptr, uptr access_size);
 void BsanExposeTag(Provenance const *prov);
 void BsanLoadProv(Provenance *prov, uptr addr);
 void BsanStoreProv(Provenance const *prov, uptr addr);
-void BsanAlloc(Provenance *prov, uptr size);
+void BsanAlloc(Provenance *prov, void* addr, uptr size);
 void BsanAllocStack(Provenance *prov, uptr size);
 void BsanDealloc(Provenance *prov);
 } // namespace __bsan
