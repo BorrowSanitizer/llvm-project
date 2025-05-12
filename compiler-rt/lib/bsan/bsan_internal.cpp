@@ -127,7 +127,7 @@ void BsanLoadProv(Provenance *prov, uptr addr) {
   bsan_rt::bsan_load_prov(prov, addr);
 }
 
-void BsanAlloc(Provenance *prov, void* addr, uptr size) {
+void BsanAlloc(Provenance *prov, uptr addr, uptr size) {
   return bsan_rt::bsan_alloc(GET_CURRENT_PC(), prov, addr, size);
 }
 
