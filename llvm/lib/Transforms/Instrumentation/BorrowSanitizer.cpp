@@ -17,12 +17,12 @@
 #include "llvm/IR/InstVisitor.h"
 #include "llvm/IR/Module.h"
 
+#include "llvm/ADT/PostOrderIterator.h"
+#include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/DebugCounter.h"
 #include "llvm/Transforms/Utils/EscapeEnumerator.h"
-#include "llvm/Analysis/MemoryBuiltins.h"
-#include "llvm/ADT/PostOrderIterator.h"
 
 using namespace llvm;
 
@@ -163,7 +163,8 @@ struct BorrowSanitizerVisitor : public InstVisitor<BorrowSanitizerVisitor> {
 
   /// Set Provenance to be the provenance value for V.
   void setProvenance(Value *V, Value *Provenance) {
-    assert(!ProvenanceMap.count(V) && "Values may only have one provenance value");
+    assert(!ProvenanceMap.count(V) &&
+           "Values may only have one provenance value");
     ProvenanceMap[V] = Provenance;
   }
 
@@ -179,17 +180,15 @@ struct BorrowSanitizerVisitor : public InstVisitor<BorrowSanitizerVisitor> {
     return getProvenance(I->getOperand(i));
   }
 
-  void instrumentAlloc(CallBase &I, APInt &AllocSize) {
-    IRBuilder<> IRB(&I);
-    Value *AllocSizeValue = ConstantInt::get(BS.IntptrTy, AllocSize.getZExtValue());
-    Value *AllocProv = IRB.CreateCall(BS.BsanFuncAlloc, {&I, AllocSizeValue});
-    setProvenance(&I, AllocProv);
+  CallInst *createAllocationMetadata(Value* AllocAddr, APInt &AllocSize) {
+    Value *AllocSizeValue =
+        ConstantInt::get(BS.IntptrTy, AllocSize.getZExtValue());
+    return CallInst::Create(BS.BsanFuncAlloc, {AllocAddr, AllocSizeValue});
   }
 
-  void instrumentDealloc(CallBase &I) {
-    IRBuilder<> IRB(&I);
-    Value *AllocProv = getProvenance(&I);
-    IRB.CreateCall(BS.BsanFuncDealloc, {AllocProv});
+  CallInst *instrumentDealloc(Instruction *I, Value* AllocAddr) {
+    IRBuilder<> IRB(I);
+
   }
 
   void instrumentLoad(LoadInst &I) {}
@@ -211,10 +210,11 @@ struct BorrowSanitizerVisitor : public InstVisitor<BorrowSanitizerVisitor> {
   }
 
   bool runOnFunction() {
-    for (BasicBlock *BB : ReversePostOrderTraversal<BasicBlock *>(&F.getEntryBlock())) {
+    for (BasicBlock *BB :
+         ReversePostOrderTraversal<BasicBlock *>(&F.getEntryBlock())) {
       visit(*BB);
     }
-    
+
     if (Instructions.empty())
       return false;
 
@@ -225,13 +225,13 @@ struct BorrowSanitizerVisitor : public InstVisitor<BorrowSanitizerVisitor> {
     }
 
     deinitStack();
+
     return true;
   }
 
   void initStack() {
     InstrumentationIRBuilder IRB(F.getEntryBlock().getFirstNonPHI());
     CurrentShadowStackPointer = IRB.CreateCall(BS.BsanFuncPushFrame);
-
   }
 
   void deinitStack() {
@@ -252,7 +252,7 @@ struct BorrowSanitizerVisitor : public InstVisitor<BorrowSanitizerVisitor> {
 
   using InstVisitor<BorrowSanitizerVisitor>::visit;
 
-  // We use this function to visit all instructions in depth-first order. 
+  // We use this function to visit all instructions in depth-first order.
   void visit(Instruction &I) {
     if (I.getMetadata(LLVMContext::MD_nosanitize))
       return;
@@ -279,18 +279,21 @@ struct BorrowSanitizerVisitor : public InstVisitor<BorrowSanitizerVisitor> {
     }
   }
 
-  void visitCallBase(CallBase &I) {   
+  void visitCallInst(CallInst &I) {
     LibFunc TLIFn;
     Function *Callee = I.getCalledFunction();
-    if(isAllocLikeFn(&I, TLI)) {
-      APInt AllocSize = getAllocSize(&I, TLI)
-        .value_or(APInt::getZero(BS.IntptrTy->getIntegerBitWidth()));
-      instrumentAlloc(I, AllocSize);
-    }else if(TLI->getLibFunc(*Callee, TLIFn) && TLI->has(TLIFn) &&
-      isLibFreeFunction(Callee, TLIFn)) {
-      instrumentDealloc(I);
-    }else {
-      //TODO: handle passing provenance through the shadow stack or TLS.
+    // TODO: Handle CallBr and Invoke
+    if (isAllocLikeFn(&I, TLI)) {
+      APInt AllocSize = getAllocSize(&I, TLI).value_or(
+          APInt::getZero(BS.IntptrTy->getIntegerBitWidth()));
+      CallInst *AllocCall = createAllocationMetadata(&I, AllocSize);
+      setProvenance(&I, AllocCall);
+      AllocCall->insertAfter(&I);
+    } else if (Callee && TLI->getLibFunc(*Callee, TLIFn) && TLI->has(TLIFn) &&
+               isLibFreeFunction(Callee, TLIFn)) {
+
+    } else {
+      // TODO: handle passing provenance through the shadow stack or TLS.
     }
   }
 };
@@ -388,7 +391,6 @@ static Constant *getOrInsertGlobal(Module &M, StringRef Name, Type *Ty) {
 void BorrowSanitizer::instrumentGlobals(IRBuilder<> &IRB, Module &M,
                                         bool *CtorComdat) {
   CreateBsanModuleDtor(M);
-
 }
 
 void BorrowSanitizer::initializeCallbacks(Module &M,
@@ -399,82 +401,45 @@ void BorrowSanitizer::initializeCallbacks(Module &M,
 
   IRBuilder<> IRB(*C);
 
-  BsanFuncRetag = M.getOrInsertFunction(
-    kBsanFuncRetagName, 
-    IRB.getVoidTy(),
-    PtrTy, Int8Ty, Int8Ty
-  );
+  BsanFuncRetag = M.getOrInsertFunction(kBsanFuncRetagName, IRB.getVoidTy(),
+                                        PtrTy, Int8Ty, Int8Ty);
 
   BsanFuncPushFrame = M.getOrInsertFunction(
-    kBsanFuncPushFrameName,
-    FunctionType::get(PtrTy, /*isVarArg=*/false)
-  );
+      kBsanFuncPushFrameName, FunctionType::get(PtrTy, /*isVarArg=*/false));
 
   BsanFuncPopFrame = M.getOrInsertFunction(
-      kBsanFuncPopFrameName, 
-      FunctionType::get(IRB.getVoidTy(), /*isVarArg=*/false)
-  );
+      kBsanFuncPopFrameName,
+      FunctionType::get(IRB.getVoidTy(), /*isVarArg=*/false));
 
   BsanFuncCopyShadow = M.getOrInsertFunction(
-      kBsanFuncCopyShadowName, 
-      IRB.getVoidTy(),
-      IntptrTy, IntptrTy, IntptrTy
-  );
+      kBsanFuncCopyShadowName, IRB.getVoidTy(), IntptrTy, IntptrTy, IntptrTy);
 
   BsanFuncClearShadow = M.getOrInsertFunction(
-    kBsanFuncClearShadowName, 
-    IRB.getVoidTy(),
-    IntptrTy, IntptrTy
-  );
+      kBsanFuncClearShadowName, IRB.getVoidTy(), IntptrTy, IntptrTy);
 
-  BsanFuncStoreProv = M.getOrInsertFunction(
-    kBsanFuncStoreProvName,
-    IRB.getVoidTy(), 
-    PtrTy, IntptrTy
-  );
+  BsanFuncStoreProv = M.getOrInsertFunction(kBsanFuncStoreProvName,
+                                            IRB.getVoidTy(), PtrTy, IntptrTy);
 
-  BsanFuncLoadProv = M.getOrInsertFunction(
-    kBsanFuncLoadProvName,
-    IRB.getVoidTy(),
-    PtrTy, 
-    IntptrTy
-  );
+  BsanFuncLoadProv = M.getOrInsertFunction(kBsanFuncLoadProvName,
+                                           IRB.getVoidTy(), PtrTy, IntptrTy);
 
-  BsanFuncAlloc = M.getOrInsertFunction(
-    kBsanFuncAllocName, 
-    IRB.getVoidTy(),
-    PtrTy, IntptrTy
-  );
+  BsanFuncAlloc = M.getOrInsertFunction(kBsanFuncAllocName, IRB.getVoidTy(),
+                                        PtrTy, IntptrTy);
 
-  BsanFuncAllocStack = M.getOrInsertFunction(
-    kBsanFuncAllocStackName,
-    IRB.getVoidTy(),
-    PtrTy, IntptrTy
-  );
+  BsanFuncAllocStack = M.getOrInsertFunction(kBsanFuncAllocStackName,
+                                             IRB.getVoidTy(), PtrTy, IntptrTy);
 
-  BsanFuncDealloc = M.getOrInsertFunction(
-    kBsanFuncDeallocName, 
-    IRB.getVoidTy(), 
-    PtrTy
-  );
+  BsanFuncDealloc =
+      M.getOrInsertFunction(kBsanFuncDeallocName, IRB.getVoidTy(), PtrTy);
 
-  BsanFuncExposeTag = M.getOrInsertFunction(
-    kBsanFuncExposeTagName, 
-    IRB.getVoidTy(), 
-    PtrTy
-  );
+  BsanFuncExposeTag =
+      M.getOrInsertFunction(kBsanFuncExposeTagName, IRB.getVoidTy(), PtrTy);
 
-  BsanFuncRead = M.getOrInsertFunction(
-    kBsanFuncReadName, 
-    IRB.getVoidTy(),
-    PtrTy, IntptrTy, IntptrTy
-  );
+  BsanFuncRead = M.getOrInsertFunction(kBsanFuncReadName, IRB.getVoidTy(),
+                                       PtrTy, IntptrTy, IntptrTy);
 
-  BsanFuncWrite = M.getOrInsertFunction(
-    kBsanFuncWriteName, 
-    IRB.getVoidTy(),
-    PtrTy, IntptrTy, IntptrTy
-  );
+  BsanFuncWrite = M.getOrInsertFunction(kBsanFuncWriteName, IRB.getVoidTy(),
+                                        PtrTy, IntptrTy, IntptrTy);
 
   if (CompileKernel) {
     createKernelApi(M, TLI);
