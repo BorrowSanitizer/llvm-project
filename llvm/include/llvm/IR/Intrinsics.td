@@ -1841,9 +1841,9 @@ def int_threadlocal_address : DefaultAttrsIntrinsic<[llvm_anyptr_ty], [LLVMMatch
 def int_experimental_stepvector : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
                                                         [], [IntrNoMem]>;
 
-// Intrinsic inserted by the Rust frontent and lowered by BorrowSanitizer to update 
+// Intrinsic inserted by the Rust frontend and lowered by BorrowSanitizer to update 
 // the permissions associated with a pointer.
-def int_bsan_retag : Intrinsic<[], [llvm_ptr_ty, llvm_i8_ty, llvm_i8_ty], []>;
+def int_bsan_retag : Intrinsic<[], [llvm_ptr_ty, llvm_anyint_ty, llvm_i8_ty, llvm_i8_ty, llvm_i8_ty, llvm_i8_ty], []>;
 
 //===---------------- Vector Predication Intrinsics --------------===//
 // Memory Intrinsics

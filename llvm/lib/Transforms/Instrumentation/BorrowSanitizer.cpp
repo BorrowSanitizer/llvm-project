@@ -180,15 +180,14 @@ struct BorrowSanitizerVisitor : public InstVisitor<BorrowSanitizerVisitor> {
     return getProvenance(I->getOperand(i));
   }
 
-  CallInst *createAllocationMetadata(Value* AllocAddr, APInt &AllocSize) {
+  CallInst *createAllocationMetadata(Value *AllocAddr, APInt &AllocSize) {
     Value *AllocSizeValue =
         ConstantInt::get(BS.IntptrTy, AllocSize.getZExtValue());
     return CallInst::Create(BS.BsanFuncAlloc, {AllocAddr, AllocSizeValue});
   }
 
-  CallInst *instrumentDealloc(Instruction *I, Value* AllocAddr) {
+  CallInst *instrumentDealloc(Instruction *I, Value *AllocAddr) {
     IRBuilder<> IRB(I);
-
   }
 
   void instrumentLoad(LoadInst &I) {}
@@ -205,7 +204,16 @@ struct BorrowSanitizerVisitor : public InstVisitor<BorrowSanitizerVisitor> {
 
   void instrumentRetag(IntrinsicInst &I) {
     CallInst *CIRetag = CallInst::Create(
-        BS.BsanFuncRetag, {I.getOperand(0), I.getOperand(1), I.getOperand(2)});
+        BS.BsanFuncRetag,
+        {
+          I.getOperand(0),  // Pointer
+          I.getOperand(1),  // Size of place
+          I.getOperand(2),  // RetagKind
+          I.getOperand(3),  // ProtectorKind
+          I.getOperand(4),  // is_freeze
+          I.getOperand(5),  // is_unpin
+        }
+    );
     ReplaceInstWithInst(&I, CIRetag);
   }
 
@@ -402,7 +410,7 @@ void BorrowSanitizer::initializeCallbacks(Module &M,
   IRBuilder<> IRB(*C);
 
   BsanFuncRetag = M.getOrInsertFunction(kBsanFuncRetagName, IRB.getVoidTy(),
-                                        PtrTy, Int8Ty, Int8Ty);
+                                        PtrTy, IntptrTy, Int8Ty, Int8Ty, Int8Ty, Int8Ty);
 
   BsanFuncPushFrame = M.getOrInsertFunction(
       kBsanFuncPushFrameName, FunctionType::get(PtrTy, /*isVarArg=*/false));

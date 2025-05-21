@@ -38,8 +38,8 @@ extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __bsan_pop_frame() {
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
-__bsan_retag(Provenance *ptr, u8 retag_kind, u8 place_kind) {
-  BsanRetag(ptr, retag_kind, place_kind);
+__bsan_retag(Provenance *ptr, uptr size, u8 retag_kind, u8 protector_kind, u8 is_freeze, u8 is_unpin) {
+  BsanRetag(ptr, size, retag_kind, protector_kind, is_freeze, is_unpin);
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void

@@ -105,8 +105,8 @@ void BsanPushFrame() { bsan_rt::bsan_push_frame(GET_CURRENT_PC()); }
 
 void BsanPopFrame() { bsan_rt::bsan_pop_frame(GET_CURRENT_PC()); }
 
-void BsanRetag(Provenance *prov, u8 retag_kind, u8 place_kind) {
-  bsan_rt::bsan_retag(GET_CURRENT_PC(), prov, retag_kind, place_kind);
+void BsanRetag(Provenance *prov, uptr size, u8 retag_kind, u8 protector_kind, u8 is_freeze, u8 is_unpin) {
+  bsan_rt::bsan_retag(GET_CURRENT_PC(), prov, size, retag_kind, protector_kind, is_freeze, is_unpin);
 }
 
 void BsanWrite(Provenance const *prov, uptr ptr, uptr access_size) {
