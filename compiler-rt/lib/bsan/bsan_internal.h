@@ -19,7 +19,7 @@ void BsanShadowClear(uptr addr, uptr access_size);
 void BsanShadowCopy(uptr dst_ptr, uptr src_ptr, uptr access_size);
 void BsanPushFrame();
 void BsanPopFrame();
-void BsanRetag(Provenance *prov,  uptr size, u8 retag_kind, u8 protector_kind, u8 is_freeze, u8 is_unpin);
+void BsanRetag(Provenance *prov, uptr size, u8 permission_kind, u8 protector_kind);
 void BsanWrite(Provenance const *prov, uptr ptr, uptr access_size);
 void BsanRead(Provenance const *prov, uptr ptr, uptr access_size);
 void BsanExposeTag(Provenance const *prov);

@@ -208,10 +208,8 @@ struct BorrowSanitizerVisitor : public InstVisitor<BorrowSanitizerVisitor> {
         {
           I.getOperand(0),  // Pointer
           I.getOperand(1),  // Size of place
-          I.getOperand(2),  // RetagKind
+          I.getOperand(2),  // PermissionKind
           I.getOperand(3),  // ProtectorKind
-          I.getOperand(4),  // is_freeze
-          I.getOperand(5),  // is_unpin
         }
     );
     ReplaceInstWithInst(&I, CIRetag);
@@ -410,7 +408,7 @@ void BorrowSanitizer::initializeCallbacks(Module &M,
   IRBuilder<> IRB(*C);
 
   BsanFuncRetag = M.getOrInsertFunction(kBsanFuncRetagName, IRB.getVoidTy(),
-                                        PtrTy, IntptrTy, Int8Ty, Int8Ty, Int8Ty, Int8Ty);
+                                        PtrTy, IntptrTy, Int8Ty, Int8Ty);
 
   BsanFuncPushFrame = M.getOrInsertFunction(
       kBsanFuncPushFrameName, FunctionType::get(PtrTy, /*isVarArg=*/false));
