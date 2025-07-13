@@ -2528,6 +2528,14 @@ def int_xray_typedevent : Intrinsic<[], [llvm_i64_ty, llvm_ptr_ty, llvm_i64_ty],
                                          ReadOnly<ArgIndex<1>>]>;
 //===----------------------------------------------------------------------===//
 
+// Rust intrinsics
+//===----------------------------------------------------------------------===//
+
+def int_retag : Intrinsic<[], [llvm_anyptr_ty, llvm_anyint_ty, llvm_i64_ty, llvm_i8_ty]>;
+
+//===----------------------------------------------------------------------===//
+
+
 //===------ Memory intrinsics with element-wise atomicity guarantees ------===//
 //
 
